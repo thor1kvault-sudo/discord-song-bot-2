@@ -33,10 +33,30 @@ def get_player(guild: discord.Guild) -> GuildMusicPlayer:
     return guild_players[guild.id]
 
 
+from aiohttp import web
+
+async def start_web_health_server():
+    """Start HTTP health check server so cloud hosting (Render Web Services, Koyeb, etc.) pass port binding checks."""
+    try:
+        app = web.Application()
+        app.router.add_get('/', lambda r: web.Response(text="🟢 Ugine Song Bot is Online!"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.getenv("PORT", 10000))
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info(f"🌐 Web Health Check server listening on port {port}")
+    except Exception as e:
+        logger.warning(f"Could not start web health server: {e}")
+
+
 @bot.event
 async def on_ready():
     logger.info(f"🟢 Bot logged in successfully as {bot.user} (ID: {bot.user.id})")
     
+    # Start Web Health Server for Render Web Service Port Binding
+    asyncio.create_task(start_web_health_server())
+
     # Set bot activity presence
     activity = discord.Activity(type=discord.ActivityType.listening, name="🎵 Spotify & YouTube | /play")
     await bot.change_presence(status=discord.Status.online, activity=activity)
