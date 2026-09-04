@@ -36,16 +36,39 @@ def get_player(guild: discord.Guild) -> GuildMusicPlayer:
 from aiohttp import web
 
 async def start_web_health_server():
-    """Start HTTP health check server so cloud hosting (Render Web Services, Koyeb, etc.) pass port binding checks."""
+    """Start HTTP health check server so cloud hosting pass port checks, Terms of Service, and Privacy Policy."""
     try:
         app = web.Application()
-        app.router.add_get('/', lambda r: web.Response(text="🟢 Ugine Song Bot is Online!"))
+        app.router.add_get('/', lambda r: web.Response(text="🟢 Ugine Song Bot is Online!", content_type="text/html"))
+        app.router.add_get('/terms', lambda r: web.Response(text="""
+        <html><head><title>Terms of Service</title></head>
+        <body style="font-family:sans-serif; padding:40px; background:#1e1e2e; color:#cdd6f4;">
+            <h1>Terms of Service</h1>
+            <p>Welcome to <b>Ugine Song Bot</b>. By using this bot in your Discord server, you agree to the following terms:</p>
+            <ul>
+                <li>The bot is provided as-is for music playback in voice channels.</li>
+                <li>Do not abuse bot commands or attempt to disrupt service.</li>
+            </ul>
+        </body></html>
+        """, content_type="text/html"))
+        app.router.add_get('/privacy', lambda r: web.Response(text="""
+        <html><head><title>Privacy Policy</title></head>
+        <body style="font-family:sans-serif; padding:40px; background:#1e1e2e; color:#cdd6f4;">
+            <h1>Privacy Policy</h1>
+            <p><b>Ugine Song Bot</b> respects your privacy:</p>
+            <ul>
+                <li>We do not record, store, or transmit voice channel audio.</li>
+                <li>Only basic command metadata (user ID, requested song query) is processed temporarily for music playback.</li>
+            </ul>
+        </body></html>
+        """, content_type="text/html"))
+
         runner = web.AppRunner(app)
         await runner.setup()
         port = int(os.getenv("PORT", 10000))
         site = web.TCPSite(runner, "0.0.0.0", port)
         await site.start()
-        logger.info(f"🌐 Web Health Check server listening on port {port}")
+        logger.info(f"🌐 Web Health Check, Terms & Privacy server listening on port {port}")
     except Exception as e:
         logger.warning(f"Could not start web health server: {e}")
 
@@ -348,9 +371,16 @@ async def on_message(message: discord.Message):
             ctx = await bot.get_context(message)
             player = get_player(message.guild)
             if await ensure_voice_connection(ctx, player):
-                added_tracks = await player.add_track_or_playlist(url, message.author, message.channel)
-                if added_tracks and not player.voice_client.is_playing() and not player.voice_client.is_paused():
-                    await player.play_next()
+                try:
+                    added_tracks = await player.add_track_or_playlist(url, message.author, message.channel)
+                    if added_tracks:
+                        if not player.voice_client.is_playing() and not player.voice_client.is_paused():
+                            await player.play_next()
+                    else:
+                        await message.channel.send("❌ Could not find or process audio for that link.", delete_after=10)
+                except Exception as e:
+                    logger.error(f"Error in auto-link handler: {e}")
+                    await message.channel.send(f"❌ Error processing link: {e}", delete_after=10)
 
     # Process standard commands
     await bot.process_commands(message)
