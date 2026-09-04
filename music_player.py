@@ -228,10 +228,13 @@ class GuildMusicPlayer:
         
         # 2. Check if it's YouTube Playlist / URL / Search query
         else:
-            tracks = await self._extract_yt_info(query, requester)
-            for t in tracks:
-                self.queue.append(t)
-                added_tracks.append(t)
+            try:
+                tracks = await self._extract_yt_info(query, requester)
+                for t in tracks:
+                    self.queue.append(t)
+                    added_tracks.append(t)
+            except Exception as e:
+                logger.error(f"Error extracting YouTube info for '{query}': {e}")
 
         # Trigger background pre-fetching for upcoming queue items
         asyncio.create_task(self._prefetch_queue())
@@ -261,7 +264,8 @@ class GuildMusicPlayer:
             search_target = f"ytsearch1:{search_query}"
             data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_target, download=False))
             
-            if not data:
+            if not data or ('entries' in data and not data['entries']):
+                logger.warning(f"No results found for: {search_query}")
                 return None
 
             first = data['entries'][0] if ('entries' in data and data['entries']) else data
@@ -391,22 +395,23 @@ class GuildMusicPlayer:
 
         self.current_track = self.queue.pop(0)
 
-        # Dynamic fallback: resolve stream_url if missing or expired
-        if not self.current_track.stream_url:
-            loop = asyncio.get_event_loop()
-            try:
-                target = self.current_track.webpage_url if ("youtube.com" in self.current_track.webpage_url or "youtu.be" in self.current_track.webpage_url) else f"ytsearch1:{self.current_track.display_title}"
-                data = await loop.run_in_executor(None, lambda: ytdl.extract_info(target, download=False))
-                if data:
-                    entry = data['entries'][0] if ('entries' in data and data['entries']) else data
-                    self.current_track.stream_url = extract_best_stream_url(entry)
-                    if (not self.current_track.duration or self.current_track.duration == 0) and entry.get('duration'):
-                        self.current_track.duration = entry.get('duration', 0)
-                        self.current_track.formatted_duration = format_duration(self.current_track.duration)
-                    if (not self.current_track.thumbnail or self.current_track.thumbnail == DEFAULT_THUMBNAIL) and entry.get('thumbnail'):
-                        self.current_track.thumbnail = entry.get('thumbnail')
-            except Exception as ex:
-                logger.error(f"Error fetching stream_url in play_next: {ex}")
+        # Always re-fetch a fresh stream URL (cloud URLs expire fast)
+        loop = asyncio.get_event_loop()
+        try:
+            target = self.current_track.webpage_url if ("youtube.com" in self.current_track.webpage_url or "youtu.be" in self.current_track.webpage_url) else f"ytsearch1:{self.current_track.display_title}"
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(target, download=False))
+            if data:
+                entry = data['entries'][0] if ('entries' in data and data['entries']) else data
+                fresh_url = extract_best_stream_url(entry)
+                if fresh_url:
+                    self.current_track.stream_url = fresh_url
+                if (not self.current_track.duration or self.current_track.duration == 0) and entry.get('duration'):
+                    self.current_track.duration = entry.get('duration', 0)
+                    self.current_track.formatted_duration = format_duration(self.current_track.duration)
+                if (not self.current_track.thumbnail or self.current_track.thumbnail == DEFAULT_THUMBNAIL) and entry.get('thumbnail'):
+                    self.current_track.thumbnail = entry.get('thumbnail')
+        except Exception as ex:
+            logger.error(f"Error fetching fresh stream_url in play_next: {ex}")
 
         if not self.current_track.stream_url:
             logger.error(f"Could not resolve stream URL for track '{self.current_track.display_title}'. Skipping...")
