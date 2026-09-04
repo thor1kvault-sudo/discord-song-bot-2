@@ -14,7 +14,7 @@ SPOTIFY_ICON_URL = "https://cdn-icons-png.flaticon.com/512/174/174872.png"
 YOUTUBE_ICON_URL = "https://cdn-icons-png.flaticon.com/512/1384/1384060.png"
 DEFAULT_THUMBNAIL = "https://cdn-icons-png.flaticon.com/512/3844/3844724.png"
 
-# yt-dlp config — uses android + web clients (confirmed working)
+# yt-dlp config — uses ios, mweb, android, web clients for maximum compatibility
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
@@ -29,7 +29,7 @@ YTDL_OPTIONS = {
     'retries': 10,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web'],
+            'player_client': ['ios', 'mweb', 'android', 'web'],
         }
     },
 }
