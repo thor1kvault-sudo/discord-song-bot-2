@@ -197,153 +197,121 @@ async def slash_play(interaction: discord.Interaction, query: str):
                 await interaction.response.send_message(f"📚 **Queued {len(added_tracks)} tracks** from playlist/album!")
             if player.voice_client and not player.voice_client.is_playing() and not player.voice_client.is_paused():
                 await player.play_next()
-
     except Exception as e:
         logger.error(f"Error in slash_play: {e}")
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
-            else:
-                await interaction.response.send_message(f"❌ An error occurred: {e}", ephemeral=True)
-        except Exception:
-            pass
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ An error occurred: {e}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"❌ An error occurred: {e}", ephemeral=True)
 
-
-
-
-@bot.tree.command(name="pause", description="Pause the currently playing song.")
+@bot.tree.command(name="pause", description="Pause or resume current playback.")
 async def slash_pause(interaction: discord.Interaction):
     player = get_player(interaction.guild)
     if player.voice_client and player.voice_client.is_playing():
         player.voice_client.pause()
         await interaction.response.send_message("⏸️ **Playback paused.**")
-    else:
-        await interaction.response.send_message("⚠️ Nothing is playing to pause.", ephemeral=True)
-
-
-@bot.tree.command(name="resume", description="Resume playback if paused.")
-async def slash_resume(interaction: discord.Interaction):
-    player = get_player(interaction.guild)
-    if player.voice_client and player.voice_client.is_paused():
+    elif player.voice_client and player.voice_client.is_paused():
         player.voice_client.resume()
         await interaction.response.send_message("▶️ **Playback resumed.**")
     else:
-        await interaction.response.send_message("⚠️ Playback is not paused.", ephemeral=True)
-
+        await interaction.response.send_message("⚠️ Nothing is currently playing.", ephemeral=True)
 
 @bot.tree.command(name="skip", description="Skip the current song.")
 async def slash_skip(interaction: discord.Interaction):
     player = get_player(interaction.guild)
     if player.voice_client and (player.voice_client.is_playing() or player.voice_client.is_paused()):
-        track_title = player.current_track.display_title if player.current_track else "Song"
+        current = player.current_track.display_title if player.current_track else "Song"
         player.voice_client.stop()
-        await interaction.response.send_message(f"⏭️ **Skipped:** {track_title}")
+        await interaction.response.send_message(f"⏭️ **Skipped:** {current}")
     else:
-        await interaction.response.send_message("⚠️ Nothing is playing to skip.", ephemeral=True)
+        await interaction.response.send_message("⚠️ Nothing is currently playing.", ephemeral=True)
 
-
-@bot.tree.command(name="stop", description="Stop playback, clear queue, and leave voice channel.")
+@bot.tree.command(name="stop", description="Stop music and disconnect the bot.")
 async def slash_stop(interaction: discord.Interaction):
     player = get_player(interaction.guild)
     await player.stop()
-    await interaction.response.send_message("⏹️ **Stopped playback and cleared the queue.**")
+    await interaction.response.send_message("⏹️ **Playback stopped and queue cleared.**")
 
-
-@bot.tree.command(name="shuffle", description="Shuffle the current music queue.")
-async def slash_shuffle(interaction: discord.Interaction):
-    player = get_player(interaction.guild)
-    if not player.queue:
-        await interaction.response.send_message("⚠️ Queue is empty!", ephemeral=True)
-        return
-    player.shuffle_queue()
-    await interaction.response.send_message(f"🔀 **Shuffled {len(player.queue)} tracks in queue!**")
-
-
-@bot.tree.command(name="queue", description="View the current song queue.")
+@bot.tree.command(name="queue", description="Display the current song queue.")
 async def slash_queue(interaction: discord.Interaction):
     player = get_player(interaction.guild)
-    
-    if not player.current_track and not player.queue:
-        await interaction.response.send_message("📄 The music queue is currently empty.", ephemeral=True)
+    if not player.queue and not player.current_track:
+        await interaction.response.send_message("📄 The queue is currently empty.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="📜 Ugine Song's Queue", color=EMBED_COLOR)
-    
+    embed = discord.Embed(title="📜 Current Playback Queue", color=EMBED_COLOR)
     if player.current_track:
-        embed.add_field(
-            name="Now Playing",
-            value=f"▶️ [{player.current_track.display_title}]({player.current_track.webpage_url}) | `{player.current_track.formatted_duration}`",
-            inline=False
-        )
+        embed.add_field(name="▶️ Currently Playing", value=f"[{player.current_track.display_title}]({player.current_track.webpage_url}) (`{player.current_track.formatted_duration}`)", inline=False)
 
     if player.queue:
-        queue_text = ""
-        for idx, track in enumerate(player.queue[:10], start=1):
-            queue_text += f"`{idx}.` [{track.display_title}]({track.webpage_url}) - `{track.formatted_duration}`\n"
+        queue_list = "\n".join([f"`{i+1}.` [{t.display_title}]({t.webpage_url}) (`{t.formatted_duration}`)" for i, t in enumerate(player.queue[:10])])
         if len(player.queue) > 10:
-            queue_text += f"\n*...and {len(player.queue) - 10} more tracks.*"
-        embed.add_field(name="Up Next", value=queue_text, inline=False)
-    
+            queue_list += f"\n*... and {len(player.queue) - 10} more songs*"
+        embed.add_field(name="Up Next", value=queue_list, inline=False)
+
     await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="nowplaying", description="Show details of the currently playing track.")
-async def slash_nowplaying(interaction: discord.Interaction):
-    player = get_player(interaction.guild)
-    if not player.current_track:
-        await interaction.response.send_message("⚠️ Nothing is currently playing.", ephemeral=True)
-        return
-    
-    await player.send_now_playing_embed()
-    await interaction.response.send_message("📌 Sent Now Playing interface!", ephemeral=True)
-
-
 # ==========================================
-# 💬 PREFIX COMMANDS & AUTO-LINK DETECTOR
+# 💬 PREFIX COMMANDS (!play, !pause, etc.)
 # ==========================================
 
 @bot.command(name="play", aliases=["p"])
 async def prefix_play(ctx: commands.Context, *, query: str):
     player = get_player(ctx.guild)
-
     if not await ensure_voice_connection(ctx, player):
         return
 
-    msg = await ctx.send("🔍 Resolving song details...")
-    added_tracks = await player.add_track_or_playlist(query, ctx.author, ctx.channel)
+    msg = await ctx.send(f"🔍 Searching: `{query}`...")
+    try:
+        added_tracks = await player.add_track_or_playlist(query, ctx.author, ctx.channel)
+        if not added_tracks:
+            await msg.edit(content="❌ Could not find or process audio for that query/link.")
+            return
 
-    if not added_tracks:
-        await msg.edit(content="❌ Could not find or process audio for that query/link.")
-        return
-
-    if len(added_tracks) == 1:
-        track = added_tracks[0]
-        if player.voice_client.is_playing() or player.voice_client.is_paused():
-            embed = discord.Embed(
-                title="🎶 Added to Queue",
-                description=f"[{track.display_title}]({track.webpage_url})\nDuration: `{track.formatted_duration}`",
-                color=EMBED_COLOR
-            )
-            embed.set_thumbnail(url=track.thumbnail)
-            await ctx.send(embed=embed)
-            await msg.delete()
+        if len(added_tracks) == 1:
+            track = added_tracks[0]
+            if player.voice_client and (player.voice_client.is_playing() or player.voice_client.is_paused()):
+                embed = discord.Embed(
+                    title="🎶 Added to Queue",
+                    description=f"[{track.display_title}]({track.webpage_url})\nDuration: `{track.formatted_duration}`",
+                    color=EMBED_COLOR
+                )
+                embed.set_thumbnail(url=track.thumbnail)
+                await msg.delete()
+                await ctx.send(embed=embed)
+            else:
+                await msg.edit(content=f"🔍 **Playing:** [{track.display_title}]({track.webpage_url})...")
+                await player.play_next()
         else:
-            await msg.delete()
-            await player.play_next()
-    else:
-        await msg.edit(content=f"📚 **Queued {len(added_tracks)} tracks** from playlist/album!")
-        if not player.voice_client.is_playing() and not player.voice_client.is_paused():
-            await player.play_next()
+            await msg.edit(content=f"📚 **Queued {len(added_tracks)} tracks** from playlist/album!")
+            if player.voice_client and not player.voice_client.is_playing() and not player.voice_client.is_paused():
+                await player.play_next()
+    except Exception as e:
+        logger.error(f"Error in prefix_play: {e}")
+        await msg.edit(content=f"❌ An error occurred: {e}")
 
+@bot.command(name="pause")
+async def prefix_pause(ctx: commands.Context):
+    player = get_player(ctx.guild)
+    if player.voice_client and player.voice_client.is_playing():
+        player.voice_client.pause()
+        await ctx.send("⏸️ **Playback paused.**")
+    elif player.voice_client and player.voice_client.is_paused():
+        player.voice_client.resume()
+        await ctx.send("▶️ **Playback resumed.**")
+    else:
+        await ctx.send("⚠️ Nothing is currently playing.")
 
 @bot.command(name="skip", aliases=["s"])
 async def prefix_skip(ctx: commands.Context):
     player = get_player(ctx.guild)
     if player.voice_client and (player.voice_client.is_playing() or player.voice_client.is_paused()):
-        track_title = player.current_track.display_title if player.current_track else "Song"
+        current = player.current_track.display_title if player.current_track else "Song"
         player.voice_client.stop()
-        await ctx.send(f"⏭️ **Skipped:** {track_title}")
-
+        await ctx.send(f"⏭️ **Skipped:** {current}")
+    else:
+        await ctx.send("⚠️ Nothing is currently playing.")
 
 @bot.command(name="stop", aliases=["leave", "disconnect"])
 async def prefix_stop(ctx: commands.Context):
@@ -397,6 +365,7 @@ def main():
         sys.exit(1)
 
     bot.run(BOT_TOKEN)
+
 
 if __name__ == "__main__":
     main()
