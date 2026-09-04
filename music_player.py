@@ -1,6 +1,7 @@
 import asyncio
 import random
 import logging
+import gc
 import discord
 import yt_dlp
 from typing import List, Optional, Dict
@@ -9,6 +10,30 @@ from spotify_helper import SpotifyHelper, SpotifyTrackInfo
 
 logger = logging.getLogger("MusicPlayer")
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
+
+fallback_ytdl = yt_dlp.YoutubeDL({
+    'format': 'best',
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'quiet': True,
+    'no_warnings': True,
+    'extractor_args': {
+        'youtube': {
+            'player_client': ['android'],
+        }
+    },
+})
+
+def safe_extract_info(target: str) -> dict:
+    try:
+        return ytdl.extract_info(target, download=False)
+    except Exception as e:
+        logger.warning(f"Primary extraction failed for '{target}' ({e}), trying fallback...")
+        try:
+            return fallback_ytdl.extract_info(target, download=False)
+        except Exception as ex:
+            logger.error(f"Fallback extraction also failed for '{target}': {ex}")
+            raise ex
 
 def format_duration(duration_seconds: int) -> str:
     if not duration_seconds or duration_seconds <= 0:
@@ -43,7 +68,7 @@ class SongTrack:
 
 class MusicControlView(discord.ui.View):
     def __init__(self, guild_player):
-        super().__init__(timeout=None)  # Keeps buttons active permanently
+        super().__init__(timeout=None)
         self.player = guild_player
 
     async def _check_voice_user(self, interaction: discord.Interaction) -> bool:
@@ -84,7 +109,7 @@ class MusicControlView(discord.ui.View):
         vc = self.player.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             current_title = self.player.current_track.display_title if self.player.current_track else "Song"
-            vc.stop()  # Triggers audio end callback which plays next
+            vc.stop()
             await interaction.response.send_message(f"⏭️ **Skipped:** {current_title}", ephemeral=False)
         else:
             await interaction.response.send_message("⚠️ Nothing is currently playing to skip.", ephemeral=True)
@@ -120,14 +145,12 @@ class MusicControlView(discord.ui.View):
         if user_id not in self.player.liked_songs:
             self.player.liked_songs[user_id] = []
 
-        # Avoid duplicates
         if any(t.webpage_url == current.webpage_url for t in self.player.liked_songs[user_id]):
             await interaction.response.send_message("❤️ This song is already in your Liked list!", ephemeral=True)
             return
 
         self.player.liked_songs[user_id].append(current)
         
-        # Try sending DM to user
         try:
             embed = discord.Embed(
                 title="❤️ Added to your Liked Songs",
@@ -137,32 +160,26 @@ class MusicControlView(discord.ui.View):
             embed.set_thumbnail(url=current.thumbnail)
             await interaction.user.send(embed=embed)
         except Exception:
-            pass  # User DMs might be closed
+            pass
 
         await interaction.response.send_message(f"❤️ **Liked!** Saved [{current.display_title}]({current.webpage_url}) to your favorites.", ephemeral=True)
 
 
-import gc
-
 def extract_best_stream_url(entry: dict) -> str:
-    """Extract direct audio stream URL from yt-dlp entry in a single call."""
     if not entry:
         return ""
     if entry.get('url'):
         return entry['url']
     if entry.get('formats'):
-        # Search for best audio-only format first
         for f in reversed(entry['formats']):
             if f.get('vcodec') == 'none' and f.get('url'):
                 return f['url']
-        # Fallback to last available format
         for f in reversed(entry['formats']):
             if f.get('url'):
                 return f['url']
     return ""
 
 
-# Memory-optimized cache (capped at 30 tracks for 100MB RAM environment)
 SONG_CACHE: Dict[str, dict] = {}
 
 def add_to_song_cache(key: str, val: dict):
@@ -171,7 +188,6 @@ def add_to_song_cache(key: str, val: dict):
         SONG_CACHE.pop(first_key, None)
     SONG_CACHE[key] = val
     gc.collect()
-
 
 
 class GuildMusicPlayer:
@@ -193,18 +209,15 @@ class GuildMusicPlayer:
         self.text_channel = text_channel
         added_tracks: List[SongTrack] = []
 
-        # 1. Check if it's a Spotify link
         if SpotifyHelper.is_spotify_url(query):
             if "playlist" in query or "album" in query:
                 sp_tracks = SpotifyHelper.get_spotify_playlist_or_album_tracks(query)
                 if sp_tracks:
-                    # Resolve first track immediately so music starts playing in under 1 second!
                     first_track = await self._resolve_search_to_track(sp_tracks[0].query, requester, is_spotify=True, sp_info=sp_tracks[0])
                     if first_track:
                         self.queue.append(first_track)
                         added_tracks.append(first_track)
                     
-                    # Append remaining tracks lazily so response is instant!
                     for sp_t in sp_tracks[1:]:
                         lazy_track = SongTrack(
                             title=sp_t.title,
@@ -225,8 +238,6 @@ class GuildMusicPlayer:
                     if track:
                         self.queue.append(track)
                         added_tracks.append(track)
-        
-        # 2. Check if it's YouTube Playlist / URL / Search query
         else:
             try:
                 tracks = await self._extract_yt_info(query, requester)
@@ -236,9 +247,7 @@ class GuildMusicPlayer:
             except Exception as e:
                 logger.error(f"Error extracting YouTube info for '{query}': {e}")
 
-        # Trigger background pre-fetching for upcoming queue items
         asyncio.create_task(self._prefetch_queue())
-
         return added_tracks
 
     async def _resolve_search_to_track(self, search_query: str, requester: discord.Member, 
@@ -246,7 +255,6 @@ class GuildMusicPlayer:
         loop = asyncio.get_event_loop()
         cache_key = search_query.strip().lower()
 
-        # Check in-memory cache for instant < 1ms hit!
         if cache_key in SONG_CACHE:
             cached = SONG_CACHE[cache_key]
             return SongTrack(
@@ -262,7 +270,7 @@ class GuildMusicPlayer:
 
         try:
             search_target = f"ytsearch1:{search_query}"
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_target, download=False))
+            data = await loop.run_in_executor(None, lambda: safe_extract_info(search_target))
             
             if not data or ('entries' in data and not data['entries']):
                 logger.warning(f"No results found for: {search_query}")
@@ -278,7 +286,6 @@ class GuildMusicPlayer:
             thumbnail = sp_info.thumbnail if (is_spotify and sp_info and sp_info.thumbnail) else first.get('thumbnail', DEFAULT_THUMBNAIL)
             artist = sp_info.artist if (is_spotify and sp_info) else ""
 
-            # Save to cache
             SONG_CACHE[cache_key] = {
                 'title': title,
                 'webpage_url': yt_webpage,
@@ -307,7 +314,6 @@ class GuildMusicPlayer:
         is_url = query.startswith("http://") or query.startswith("https://")
         search_target = query if is_url else f"ytsearch1:{query}"
 
-        # Check cache for search query
         cache_key = query.strip().lower()
         if not is_url and cache_key in SONG_CACHE:
             cached = SONG_CACHE[cache_key]
@@ -321,13 +327,12 @@ class GuildMusicPlayer:
                 is_spotify=False
             )]
 
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(search_target, download=False))
+        data = await loop.run_in_executor(None, lambda: safe_extract_info(search_target))
 
         tracks = []
         if not data:
             return tracks
 
-        # Handle playlist extraction vs single video search
         if 'entries' in data and data['entries']:
             for entry in data['entries']:
                 if not entry:
@@ -345,7 +350,6 @@ class GuildMusicPlayer:
                 )
                 tracks.append(t)
         else:
-            # Single video
             yt_webpage = data.get('webpage_url', f"https://www.youtube.com/watch?v={data.get('id')}")
             stream_url = extract_best_stream_url(data)
             t = SongTrack(
@@ -362,7 +366,6 @@ class GuildMusicPlayer:
         return tracks
 
     async def _prefetch_queue(self):
-        """Background pre-fetch stream URLs for next tracks in queue so playback switches instantly!"""
         if not self.queue:
             return
         loop = asyncio.get_event_loop()
@@ -370,7 +373,7 @@ class GuildMusicPlayer:
             if not track.stream_url:
                 try:
                     target = track.webpage_url if ("youtube.com" in track.webpage_url or "youtu.be" in track.webpage_url) else f"ytsearch1:{track.display_title}"
-                    data = await loop.run_in_executor(None, lambda: ytdl.extract_info(target, download=False))
+                    data = await loop.run_in_executor(None, lambda: safe_extract_info(target))
                     if data:
                         entry = data['entries'][0] if ('entries' in data and data['entries']) else data
                         track.stream_url = extract_best_stream_url(entry)
@@ -395,11 +398,10 @@ class GuildMusicPlayer:
 
         self.current_track = self.queue.pop(0)
 
-        # Always re-fetch a fresh stream URL (cloud URLs expire fast)
         loop = asyncio.get_event_loop()
         try:
             target = self.current_track.webpage_url if ("youtube.com" in self.current_track.webpage_url or "youtu.be" in self.current_track.webpage_url) else f"ytsearch1:{self.current_track.display_title}"
-            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(target, download=False))
+            data = await loop.run_in_executor(None, lambda: safe_extract_info(target))
             if data:
                 entry = data['entries'][0] if ('entries' in data and data['entries']) else data
                 fresh_url = extract_best_stream_url(entry)
@@ -418,10 +420,8 @@ class GuildMusicPlayer:
             await self.play_next()
             return
 
-        # Pre-fetch next items in background while current song starts!
         asyncio.create_task(self._prefetch_queue())
 
-        # Create FFmpeg PCM source
         audio_source = discord.FFmpegPCMAudio(self.current_track.stream_url, **FFMPEG_OPTIONS)
         
         if not self.voice_client or not self.voice_client.is_connected():
@@ -434,10 +434,7 @@ class GuildMusicPlayer:
             asyncio.run_coroutine_threadsafe(self.play_next(), self.bot.loop)
 
         self.voice_client.play(audio_source, after=after_playing)
-
-        # Send Now Playing Rich Embed matching exact user design screenshot
         await self.send_now_playing_embed()
-
 
     async def send_now_playing_embed(self):
         if not self.current_track or not self.text_channel:
@@ -447,25 +444,19 @@ class GuildMusicPlayer:
         icon_url = SPOTIFY_ICON_URL if track.is_spotify else YOUTUBE_ICON_URL
 
         embed = discord.Embed(color=EMBED_COLOR)
-        
-        # Top Header: Spotify / YouTube Icon + "Now Playing"
         embed.set_author(name="Now Playing", icon_url=icon_url)
         
-        # Description formatting matching exact screenshot
         description_text = (
             f"• [{track.display_title}]({track.webpage_url})\n\n"
             f"• Duration: `{track.formatted_duration}` - ({track.requester.mention})"
         )
         embed.description = description_text
         
-        # Thumbnail image on the right
         if track.thumbnail:
             embed.set_thumbnail(url=track.thumbnail)
 
-        # View with Red Interactive Buttons
         view = MusicControlView(self)
 
-        # Delete previous now playing message if present to keep chat clean
         if self.now_playing_message:
             try:
                 await self.now_playing_message.delete()
